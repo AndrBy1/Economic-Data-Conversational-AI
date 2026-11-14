@@ -1,0 +1,1 @@
+"""Economic data application package."""
