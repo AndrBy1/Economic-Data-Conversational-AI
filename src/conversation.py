@@ -24,13 +24,32 @@ def _since(frame: pd.DataFrame, years: int) -> pd.DataFrame:
 def answer_question(question: str, data: dict[str, pd.DataFrame], source_label: str) -> dict:
     """Answer supported questions with computed values, not LLM guesses."""
     text = question.lower()
+    for word, number in {"five": "5", "ten": "10", "one": "1"}.items():
+        text = text.replace(word + " years", number + " years")
     gdp, cpi = data["gdp"], data["cpi"]
+    if any(word in text for word in ("relationship", "correlat", "visual", "chart", "plot", "graph", "summar", "trend")):
+        comparison = align_growth_series(gdp, cpi)
+        if comparison.empty:
+            return {"answer": "Insufficient overlapping observations.", "chart": False}
+        correlation = comparison["gdp_growth"].corr(comparison["core_cpi_inflation"])
+        answer = (f"Nominal GDP growth: {trend_summary(comparison, 'gdp_growth')} "
+                  f"Core CPI inflation: {trend_summary(comparison, 'core_cpi_inflation')} "
+                  f"Pearson correlation across {len(comparison)} quarters: {correlation:.2f}. "
+                  "Association does not establish causation. See the comparison chart.")
+        return {"answer": answer, "chart": True}
+    if "cpi" in text and any(word in text for word in ("changed", "past", "last")):
+        window = _since(yoy_growth(cpi, 12), _years(text, 5))
+        if window.empty:
+            return {"answer": "Insufficient data for year-over-year inflation.", "chart": False}
+        return {"answer": f"Core CPI inflation: {trend_summary(window, 'growth_rate')} Available window: {window.iloc[0]['date']:%Y-%m-%d} through {window.iloc[-1]['date']:%Y-%m-%d}.", "chart": False}
     if "latest" in text and "gdp" in text:
         item = latest(gdp)
         answer = f"The latest GDP observation is ${item['value']:,.1f} billion, reported for {item['date']:%Y-%m-%d}."
         return {"answer": answer, "chart": False}
     if ("inflation" in text or "rate" in text) and ("cpi" in text or "core" in text):
         inflation = yoy_growth(cpi, 12)
+        if inflation.empty:
+            return {"answer": "Insufficient data for year-over-year inflation.", "chart": False}
         item = inflation.iloc[-1]
         answer = f"The latest Core CPI inflation rate is {item['growth_rate']:.2f}% year over year, based on {item['date']:%Y-%m-%d}."
         return {"answer": answer, "chart": False}

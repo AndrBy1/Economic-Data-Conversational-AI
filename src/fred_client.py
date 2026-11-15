@@ -62,7 +62,7 @@ class FredClient:
             response.raise_for_status()
             payload = response.json()
         except requests.RequestException as exc:
-            raise FredAPIError(f"Could not reach FRED: {exc}") from exc
+            raise FredAPIError("FRED API request failed; check credentials and connectivity.") from None
         except ValueError as exc:
             raise FredAPIError("FRED returned an invalid JSON response.") from exc
 
@@ -104,6 +104,7 @@ class FredClient:
         except (requests.RequestException, ValueError) as exc:
             raise FredAPIError(f"Could not load public FRED CSV for {series.series_id}: {exc}") from exc
 
+        frame = frame.rename(columns={"observation_date": "DATE"})
         if "DATE" not in frame or series.series_id not in frame:
             raise FredAPIError(f"Unexpected FRED CSV format for {series.series_id}.")
         frame = frame.rename(columns={"DATE": "date", series.series_id: "value"})[["date", "value"]]

@@ -39,6 +39,7 @@ def align_growth_series(gdp: pd.DataFrame, cpi: pd.DataFrame) -> pd.DataFrame:
     gdp_growth["period"] = gdp_growth["date"].dt.to_period("Q").dt.to_timestamp()
     cpi_growth["period"] = cpi_growth["date"].dt.to_period("Q").dt.to_timestamp()
     gdp_growth = gdp_growth.groupby("period", as_index=False)["gdp_growth"].last()
+    cpi_growth = cpi_growth.groupby("period").filter(lambda group: len(group) == 3)
     cpi_growth = cpi_growth.groupby("period", as_index=False)["core_cpi_inflation"].mean()
     return pd.merge(gdp_growth, cpi_growth, on="period", how="inner").sort_values("period")
 

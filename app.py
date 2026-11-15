@@ -1,8 +1,10 @@
 """Streamlit entry point for the GDP/Core CPI analytics foundation."""
 
 from datetime import date, timedelta
+from io import BytesIO
 
 import matplotlib.pyplot as plt
+import pandas as pd
 import streamlit as st
 
 from src.analytics import align_growth_series, latest, trend_summary, yoy_growth
@@ -20,19 +22,27 @@ with st.sidebar:
     years = st.slider("Years of history", min_value=1, max_value=20, value=10)
     load = st.button("Load FRED data", type="primary")
     use_ollama = st.checkbox("Use Ollama to explain answers", value=True)
+    demo = st.checkbox("Use synthetic demo data", value=False)
 
-if load or "data" not in st.session_state:
+if load or "data" not in st.session_state or st.session_state.get("settings") != (years, demo):
+    st.session_state.settings = (years, demo)
+    st.session_state.messages = []
     client = FredClient()
     start = date.today() - timedelta(days=365 * years + 400)
     try:
         with st.spinner("Loading GDP and Core CPI from FRED..."):
+            if demo:
+                raise FredAPIError("Demo mode selected")
             if client.api_key:
-                st.session_state.data = {
-                    "gdp": client.get_observations(GDP, start=start),
-                    "cpi": client.get_observations(CORE_CPI, start=start),
-                }
-                st.session_state.source_label = "Live FRED API data"
-            else:
+                try:
+                    st.session_state.data = {
+                        "gdp": client.get_observations(GDP, start=start),
+                        "cpi": client.get_observations(CORE_CPI, start=start),
+                    }
+                    st.session_state.source_label = "Live FRED API data"
+                except FredAPIError:
+                    client.api_key = None
+            if not client.api_key:
                 st.session_state.data = {
                     "gdp": client.get_public_csv_observations(GDP, start=start),
                     "cpi": client.get_public_csv_observations(CORE_CPI, start=start),
@@ -45,6 +55,7 @@ if load or "data" not in st.session_state:
 
 data = st.session_state.data
 st.info(f"Data source: {st.session_state.source_label}")
+st.caption("GDP is nominal (current dollars), seasonally adjusted at an annual rate. Growth is year over year. Core CPI is seasonally adjusted; quarterly comparisons average monthly YoY rates. Observation dates are period dates, not release dates.")
 gdp_latest = latest(data["gdp"])
 cpi_latest = latest(data["cpi"])
 gdp_growth = yoy_growth(data["gdp"], 4)
@@ -64,6 +75,8 @@ else:
 
 st.subheader("Growth and inflation")
 comparison = align_growth_series(data["gdp"], data["cpi"])
+if not comparison.empty:
+    comparison = comparison[comparison.period >= comparison.period.max() - pd.DateOffset(years=years)]
 if comparison.empty:
     st.warning("There are not yet enough overlapping observations to compare the series.")
 else:
@@ -77,12 +90,19 @@ else:
     ax.legend()
     fig.tight_layout()
     st.pyplot(fig)
+    chart_bytes = BytesIO()
+    fig.savefig(chart_bytes, format="png", bbox_inches="tight")
+    st.download_button("Download comparison chart", chart_bytes.getvalue(), "comparison.png", "image/png")
+    st.download_button("Download comparison data", comparison.to_csv(index=False), "comparison.csv", "text/csv")
+    plt.close(fig)
     st.write(trend_summary(comparison, "gdp_growth"))
 
 st.subheader("Ask the economic data assistant")
 for message in st.session_state.get("messages", []):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        if message.get("chart") is not None:
+            st.line_chart(message["chart"].set_index("period"))
 
 question = st.chat_input("Ask about GDP, Core CPI, trends, or their relationship")
 if question:
@@ -92,9 +112,11 @@ if question:
     if use_ollama:
         explained = OllamaClient().explain(question, response, st.session_state.source_label)
         if explained:
-            response = explained
+            response += "\n\nOllama interpretation (generated):\n\n" + explained
+        else:
+            response += "\n\nOllama is unavailable; showing the calculated answer."
     response += f"\n\n_Source: {st.session_state.source_label}._"
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.session_state.messages.append({"role": "assistant", "content": response, "chart": comparison.copy() if result['chart'] else None})
     st.rerun()
 
 with st.expander("What is implemented in this first slice?"):
