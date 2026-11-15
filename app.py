@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 from src.analytics import align_growth_series, latest, trend_summary, yoy_growth
+from src.conversation import OllamaClient, answer_question
+from src.demo_data import load_demo_data
 from src.fred_client import CORE_CPI, GDP, FredAPIError, FredClient
 
 
@@ -17,22 +19,32 @@ with st.sidebar:
     st.header("Data window")
     years = st.slider("Years of history", min_value=1, max_value=20, value=10)
     load = st.button("Load FRED data", type="primary")
+    use_ollama = st.checkbox("Use Ollama to explain answers", value=True)
 
 if load or "data" not in st.session_state:
     client = FredClient()
     start = date.today() - timedelta(days=365 * years + 400)
     try:
         with st.spinner("Loading GDP and Core CPI from FRED..."):
-            st.session_state.data = {
-                "gdp": client.get_observations(GDP, start=start),
-                "cpi": client.get_observations(CORE_CPI, start=start),
-            }
+            if client.api_key:
+                st.session_state.data = {
+                    "gdp": client.get_observations(GDP, start=start),
+                    "cpi": client.get_observations(CORE_CPI, start=start),
+                }
+                st.session_state.source_label = "Live FRED API data"
+            else:
+                st.session_state.data = {
+                    "gdp": client.get_public_csv_observations(GDP, start=start),
+                    "cpi": client.get_public_csv_observations(CORE_CPI, start=start),
+                }
+                st.session_state.source_label = "Live public FRED CSV data (no API key)"
     except FredAPIError as exc:
-        st.error(str(exc))
-        st.info("Set FRED_API_KEY in a local .env file, then reload the app.")
-        st.stop()
+        st.session_state.data = load_demo_data()
+        st.session_state.source_label = "Synthetic demo data — not current FRED data"
+        st.warning(f"FRED could not be reached ({exc}). Using clearly labelled demo data.")
 
 data = st.session_state.data
+st.info(f"Data source: {st.session_state.source_label}")
 gdp_latest = latest(data["gdp"])
 cpi_latest = latest(data["cpi"])
 gdp_growth = yoy_growth(data["gdp"], 4)
@@ -67,14 +79,32 @@ else:
     st.pyplot(fig)
     st.write(trend_summary(comparison, "gdp_growth"))
 
+st.subheader("Ask the economic data assistant")
+for message in st.session_state.get("messages", []):
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+question = st.chat_input("Ask about GDP, Core CPI, trends, or their relationship")
+if question:
+    st.session_state.setdefault("messages", []).append({"role": "user", "content": question})
+    result = answer_question(question, data, st.session_state.source_label)
+    response = result["answer"]
+    if use_ollama:
+        explained = OllamaClient().explain(question, response, st.session_state.source_label)
+        if explained:
+            response = explained
+    response += f"\n\n_Source: {st.session_state.source_label}._"
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.rerun()
+
 with st.expander("What is implemented in this first slice?"):
     st.markdown(
         """
         - FRED API client with typed, validated observations.
         - Latest-value retrieval and year-over-year GDP/Core CPI calculations.
         - A common quarterly timeline for comparison and visualization.
-        - A Streamlit UI with explicit data loading and clear API-key errors.
-
-        The conversational Ollama layer will call these calculations as tools in the next slice, so generated answers are grounded in the same numbers shown here.
+        - A Streamlit chat router for the required question types.
+        - Optional Ollama explanations grounded in deterministic calculations.
+        - Public FRED CSV fallback and labelled synthetic demo data when FRED is unavailable.
         """
     )
